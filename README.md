@@ -31,7 +31,8 @@ Captures **every hook event** Claude Code emits and logs them to JSONL files wit
 | `Stop` | Main agent finishes | `assistant_response` |
 | `SubagentStop` | Subagent finishes | `agent_id`, `subagent_type`, `assistant_response` |
 | `Notification` | Notifications sent | `message`, `notification_type` |
-| `PreCompact` | Before context compaction | `trigger` (manual/auto) |
+| `PreCompact` | Before context compaction | `trigger`, `custom_instructions`, `transcript_stats` |
+| `SessionEnd` | Session ends | `reason`, `transcript_stats` |
 
 ---
 
@@ -41,18 +42,43 @@ Captures **every hook event** Claude Code emits and logs them to JSONL files wit
 
 Fires when Claude Code starts or resumes a session.
 
+#### Fresh Start
 ```json
 {
   "ts": "2025-12-12T11:05:15Z",
   "session_id": "4a07e905-8520-4bdc-8186-96750a00bed2",
   "event": "SessionStart",
   "cwd": "/workspace",
-  "source": "startup"
+  "source": "startup",
+  "transcript_path": "/root/.claude/projects/-workspace/4a07e905-8520-4bdc-8186-96750a00bed2.jsonl"
+}
+```
+
+#### After Compact (with transcript_stats)
+```json
+{
+  "event": "SessionStart",
+  "source": "compact",
+  "transcript_path": "/root/.claude/projects/.../session.jsonl",
+  "transcript_stats": {
+    "msg_counts": {"user": 2, "assistant": 3, "system": 1},
+    "tool_calls": {"WebSearch": 1, "Read": 3},
+    "total_input_tokens": 8,
+    "total_output_tokens": 7,
+    "cache_read_tokens": 43839,
+    "cache_creation_tokens": 11206,
+    "duration_seconds": 45.2,
+    "slug": "starry-watching-stonebraker",
+    "prior_compacts": 1,
+    "files_read_count": 3,
+    "files_written_count": 2
+  }
 }
 ```
 
 **Fields:**
 - `source`: `"startup"` | `"resume"` | `"clear"` | `"compact"`
+- `transcript_stats`: Session statistics (present on resume/compact, parsed from transcript)
 
 ---
 
@@ -271,6 +297,65 @@ Fires when Claude sends notifications.
 
 ---
 
+### 8. PreCompact
+
+Fires before context compaction. Includes full session statistics from transcript.
+
+```json
+{
+  "ts": "2025-12-12T11:52:31Z",
+  "session_id": "bf074496-b555-46c8-a203-493483148a48",
+  "event": "PreCompact",
+  "trigger": "manual",
+  "custom_instructions": "Keep simple",
+  "transcript_path": "/root/.claude/projects/.../session.jsonl",
+  "transcript_stats": {
+    "msg_counts": {"user": 2, "assistant": 3, "system": 1},
+    "tool_calls": {"WebSearch": 1},
+    "total_input_tokens": 8,
+    "total_output_tokens": 7,
+    "cache_read_tokens": 43839,
+    "cache_creation_tokens": 11206,
+    "duration_seconds": 9.0
+  }
+}
+```
+
+**Fields:**
+- `trigger`: `"manual"` (from /compact) | `"auto"` (context full)
+- `custom_instructions`: User's instructions passed to `/compact <instructions>`
+- `transcript_stats`: Full session statistics before compaction
+
+---
+
+### 9. SessionEnd
+
+Fires when session ends. Includes final session statistics.
+
+```json
+{
+  "ts": "2025-12-12T12:00:00Z",
+  "session_id": "bf074496-b555-46c8-a203-493483148a48",
+  "event": "SessionEnd",
+  "reason": "prompt_input_exit",
+  "transcript_stats": {
+    "msg_counts": {"user": 5, "assistant": 8, "system": 2},
+    "tool_calls": {"Bash": 3, "Read": 5, "Write": 2},
+    "total_input_tokens": 150,
+    "total_output_tokens": 89,
+    "duration_seconds": 300.5,
+    "files_read_count": 5,
+    "files_written_count": 2
+  }
+}
+```
+
+**Fields:**
+- `reason`: `"clear"` | `"logout"` | `"prompt_input_exit"` | `"other"`
+- `transcript_stats`: Final session statistics
+
+---
+
 ## Querying Logs
 
 Logs are stored in `hooks/logs/` as JSONL files:
@@ -303,6 +388,12 @@ jq 'select(.assistant_response) | {event, response: .assistant_response[:100]}' 
 
 # Event counts
 jq -r '.event' hooks/logs/latest.jsonl | sort | uniq -c
+
+# Session stats from PreCompact
+jq 'select(.event == "PreCompact") | .transcript_stats' hooks/logs/latest.jsonl
+
+# Token usage summary
+jq 'select(.transcript_stats) | {event, tokens: .transcript_stats.total_input_tokens, cache: .transcript_stats.cache_read_tokens}' hooks/logs/latest.jsonl
 ```
 
 ---
@@ -327,8 +418,9 @@ cchooks/
 1. `settings.json` registers hooks for all 10 events
 2. Each hook runs `logger.py` which receives JSON on stdin
 3. Logger extracts key fields, flattens tool params, tracks agent state
-4. Logs written to session-specific JSONL files
-5. `latest.jsonl` symlink always points to current session
+4. For PreCompact/SessionStart/SessionEnd: parses transcript for rich stats
+5. Logs written to session-specific JSONL files
+6. `latest.jsonl` symlink always points to current session
 
 ## State Tracking
 

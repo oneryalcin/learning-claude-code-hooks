@@ -52,6 +52,127 @@ def extract_task_response(tool_response: dict) -> str:
     return "\n".join(texts) if texts else ""
 
 
+def parse_transcript_stats(transcript_path: str) -> dict:
+    """Parse transcript and extract session statistics."""
+    stats = {
+        "message_counts": {"user": 0, "assistant": 0, "system": 0},
+        "tool_calls": {},  # tool_name -> count
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "compact_count": 0,
+        "first_ts": None,
+        "last_ts": None,
+        "slug": None,
+        "files_read": set(),
+        "files_written": set(),
+    }
+
+    if not transcript_path or not os.path.exists(transcript_path):
+        return {}
+
+    try:
+        with open(transcript_path, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    continue
+
+                # Track timestamps
+                ts = entry.get("timestamp")
+                if ts:
+                    if not stats["first_ts"]:
+                        stats["first_ts"] = ts
+                    stats["last_ts"] = ts
+
+                # Capture slug
+                if entry.get("slug") and not stats["slug"]:
+                    stats["slug"] = entry["slug"]
+
+                # Count message types
+                msg_type = entry.get("type")
+                if msg_type in stats["message_counts"]:
+                    stats["message_counts"][msg_type] += 1
+
+                # Count compact boundaries
+                if entry.get("subtype") == "compact_boundary":
+                    stats["compact_count"] += 1
+                    # Get preTokens from compact metadata
+                    compact_meta = entry.get("compactMetadata", {})
+                    if compact_meta.get("preTokens"):
+                        stats["pre_compact_tokens"] = compact_meta["preTokens"]
+
+                # Extract token usage from assistant messages
+                if msg_type == "assistant":
+                    message = entry.get("message", {})
+                    usage = message.get("usage", {})
+                    stats["total_input_tokens"] += usage.get("input_tokens", 0)
+                    stats["total_output_tokens"] += usage.get("output_tokens", 0)
+                    stats["total_cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
+                    stats["total_cache_creation_tokens"] += usage.get("cache_creation_input_tokens", 0)
+
+                    # Count tool calls
+                    content = message.get("content", [])
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_name = block.get("name", "unknown")
+                            stats["tool_calls"][tool_name] = stats["tool_calls"].get(tool_name, 0) + 1
+
+                            # Track file operations
+                            tool_input = block.get("input", {})
+                            if tool_name == "Read" and tool_input.get("file_path"):
+                                stats["files_read"].add(tool_input["file_path"])
+                            elif tool_name in ("Write", "Edit") and tool_input.get("file_path"):
+                                stats["files_written"].add(tool_input["file_path"])
+
+    except Exception:
+        pass
+
+    # Calculate duration
+    if stats["first_ts"] and stats["last_ts"]:
+        try:
+            first = datetime.fromisoformat(stats["first_ts"].replace("Z", "+00:00"))
+            last = datetime.fromisoformat(stats["last_ts"].replace("Z", "+00:00"))
+            stats["duration_seconds"] = (last - first).total_seconds()
+        except Exception:
+            pass
+
+    # Convert sets to lists for JSON serialization
+    stats["files_read"] = list(stats["files_read"])
+    stats["files_written"] = list(stats["files_written"])
+
+    # Only return non-empty/non-zero values
+    result = {}
+    if stats["message_counts"]["user"] or stats["message_counts"]["assistant"]:
+        result["msg_counts"] = stats["message_counts"]
+    if stats["tool_calls"]:
+        result["tool_calls"] = stats["tool_calls"]
+    if stats["total_input_tokens"]:
+        result["total_input_tokens"] = stats["total_input_tokens"]
+    if stats["total_output_tokens"]:
+        result["total_output_tokens"] = stats["total_output_tokens"]
+    if stats["total_cache_read_tokens"]:
+        result["cache_read_tokens"] = stats["total_cache_read_tokens"]
+    if stats["total_cache_creation_tokens"]:
+        result["cache_creation_tokens"] = stats["total_cache_creation_tokens"]
+    if stats["compact_count"]:
+        result["prior_compacts"] = stats["compact_count"]
+    if stats.get("pre_compact_tokens"):
+        result["pre_compact_tokens"] = stats["pre_compact_tokens"]
+    if stats.get("duration_seconds"):
+        result["duration_seconds"] = round(stats["duration_seconds"], 1)
+    if stats["slug"]:
+        result["slug"] = stats["slug"]
+    if stats["files_read"]:
+        result["files_read_count"] = len(stats["files_read"])
+    if stats["files_written"]:
+        result["files_written_count"] = len(stats["files_written"])
+
+    return result
+
+
 class AgentStateTracker:
     """Track agent_id → subagent_type mapping across hook invocations."""
 
@@ -298,17 +419,32 @@ def main():
     # For SessionStart/SessionEnd, capture source/reason
     if event == "SessionStart":
         log_entry["source"] = input_data.get("source")
+        log_entry["transcript_path"] = input_data.get("transcript_path")
+        # Parse transcript for session stats (useful on resume/compact)
+        transcript_stats = parse_transcript_stats(input_data.get("transcript_path"))
+        if transcript_stats:
+            log_entry["transcript_stats"] = transcript_stats
     if event == "SessionEnd":
         log_entry["reason"] = input_data.get("reason")
+        # Capture final session stats
+        transcript_stats = parse_transcript_stats(input_data.get("transcript_path"))
+        if transcript_stats:
+            log_entry["transcript_stats"] = transcript_stats
 
     # For Notification, capture message and type
     if event == "Notification":
         log_entry["message"] = input_data.get("message")
         log_entry["notification_type"] = input_data.get("notification_type")
 
-    # For PreCompact, capture trigger
+    # For PreCompact, capture trigger and custom_instructions
     if event == "PreCompact":
         log_entry["trigger"] = input_data.get("trigger")
+        log_entry["custom_instructions"] = input_data.get("custom_instructions")
+        log_entry["transcript_path"] = input_data.get("transcript_path")
+        # Parse transcript for pre-compact stats
+        transcript_stats = parse_transcript_stats(input_data.get("transcript_path"))
+        if transcript_stats:
+            log_entry["transcript_stats"] = transcript_stats
 
     # Remove None values for cleaner output
     log_entry = {k: v for k, v in log_entry.items() if v is not None}
