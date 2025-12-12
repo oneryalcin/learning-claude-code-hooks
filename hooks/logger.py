@@ -164,20 +164,76 @@ def main():
         "permission_mode": input_data.get("permission_mode"),
     }
 
-    # For Task tool, extract subagent_type and model
-    if tool_name == "Task" and tool_input:
-        log_entry["subagent_type"] = tool_input.get("subagent_type")
-        log_entry["subagent_model"] = tool_input.get("model")
-        log_entry["subagent_description"] = tool_input.get("description")
+    # Flatten tool-specific params for easier filtering
+    if tool_input:
+        # Task tool
+        if tool_name == "Task":
+            log_entry["subagent_type"] = tool_input.get("subagent_type")
+            log_entry["subagent_model"] = tool_input.get("model")
+            log_entry["subagent_description"] = tool_input.get("description")
+            log_entry["subagent_run_in_background"] = tool_input.get("run_in_background")
+            log_entry["subagent_resume"] = tool_input.get("resume")
 
-        # On PreToolUse, store as pending (agent_id not known yet)
-        if event == "PreToolUse":
-            tracker.set_pending_task(
-                session_id=session_id,
-                subagent_type=tool_input.get("subagent_type"),
-                model=tool_input.get("model"),
-                description=tool_input.get("description")
-            )
+            # On PreToolUse, store as pending (agent_id not known yet)
+            if event == "PreToolUse":
+                tracker.set_pending_task(
+                    session_id=session_id,
+                    subagent_type=tool_input.get("subagent_type"),
+                    model=tool_input.get("model"),
+                    description=tool_input.get("description")
+                )
+
+        # Bash tool
+        elif tool_name == "Bash":
+            log_entry["bash_command"] = tool_input.get("command")
+            log_entry["bash_description"] = tool_input.get("description")
+            log_entry["bash_timeout"] = tool_input.get("timeout")
+            log_entry["bash_background"] = tool_input.get("run_in_background")
+            log_entry["bash_no_sandbox"] = tool_input.get("dangerouslyDisableSandbox")
+
+        # Read tool
+        elif tool_name == "Read":
+            log_entry["file_path"] = tool_input.get("file_path")
+            log_entry["read_offset"] = tool_input.get("offset")
+            log_entry["read_limit"] = tool_input.get("limit")
+
+        # Write tool
+        elif tool_name == "Write":
+            log_entry["file_path"] = tool_input.get("file_path")
+            # content can be large, just note its length
+            content = tool_input.get("content", "")
+            log_entry["write_content_length"] = len(content) if content else 0
+
+        # Edit tool
+        elif tool_name == "Edit":
+            log_entry["file_path"] = tool_input.get("file_path")
+            log_entry["edit_replace_all"] = tool_input.get("replace_all")
+
+        # Grep tool
+        elif tool_name == "Grep":
+            log_entry["grep_pattern"] = tool_input.get("pattern")
+            log_entry["grep_path"] = tool_input.get("path")
+            log_entry["grep_glob"] = tool_input.get("glob")
+            log_entry["grep_output_mode"] = tool_input.get("output_mode")
+
+        # Glob tool
+        elif tool_name == "Glob":
+            log_entry["glob_pattern"] = tool_input.get("pattern")
+            log_entry["glob_path"] = tool_input.get("path")
+
+        # WebSearch tool
+        elif tool_name == "WebSearch":
+            log_entry["search_query"] = tool_input.get("query")
+
+        # WebFetch tool
+        elif tool_name == "WebFetch":
+            log_entry["fetch_url"] = tool_input.get("url")
+
+        # TaskOutput tool
+        elif tool_name == "TaskOutput":
+            log_entry["task_output_id"] = tool_input.get("task_id")
+            log_entry["task_output_block"] = tool_input.get("block")
+            log_entry["task_output_timeout"] = tool_input.get("timeout")
 
     # For PostToolUse, handle tool_response specially
     if event == "PostToolUse":
