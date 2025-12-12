@@ -1,0 +1,12 @@
+services:
+  claude:
+    build: .
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./workspace:/workspace
+      - ./hooks:/workspace/hooks
+      - ./claude.json:/root/.claude.json
+      - ./settings.json:/root/.claude/settings.json
+    stdin_open: true
+    tty: true
